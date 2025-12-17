@@ -1,5 +1,6 @@
 import sys
 import time
+import re
 import pandas as pd
 from awsglue.transforms import *
 from awsglue.utils import getResolvedOptions
@@ -9,8 +10,33 @@ from awsglue.job import Job
 from googleapiclient.errors import HttpError
 
 def sanitize_column_name(name):
-    # write this function yourself
-    a = ''
+    """
+    Function that applies rules to make sure the column names are optimal for Redshift
+    """
+
+    if not name:
+        return None
+
+    # Normalize
+    name = name.strip().lower()
+
+    # Fix typos
+    name = name.replace('inlcuded', 'included')
+
+    # Replace non-alphanumeric characters with underscore
+    name = re.sub(r'[^a-z0-9]', '_', name)
+
+    # Merge multiple underscores
+    name = re.sub(r'_+', '_', name)
+
+    # Trim underscores
+    name = name.strip('_')
+
+    # Ensure name starts with a letter
+    if not name[0].isalpha():
+        name = f'col_{name}'
+
+    return name
 
 def find_sheet_range(sheet, spreadsheet_id, tab_name, search_value):
     '''
