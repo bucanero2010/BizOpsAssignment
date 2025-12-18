@@ -29,6 +29,6 @@ steps = [
         type_3_overage_fee DECIMAL(10,2)
     );
     """, """
-    DROP TABLE IF EXISTS sheets_order_form;
+    DROP TABLE IF EXISTS sheets_order_forms;
     """)
 ]
