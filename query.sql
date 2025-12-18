@@ -100,7 +100,7 @@ WITH order_staging AS (
         ,   type_x_rate AS rate
         ,   type_x_overage_fee AS overage_fee
     
-    FROM sheets_order_form
+    FROM sheets_order_forms
 
     UNION ALL
 
@@ -116,7 +116,7 @@ WITH order_staging AS (
         ,   type_1_rate AS rate
         ,   type_1_overage_fee AS overage_fee
     
-    FROM sheets_order_form
+    FROM sheets_order_forms
 
     UNION ALL
 
@@ -132,7 +132,7 @@ WITH order_staging AS (
         ,   type_2_rate AS rate
         ,   type_2_overage_fee AS overage_fee
     
-    FROM sheets_order_form
+    FROM sheets_order_forms
 
     UNION ALL
 
@@ -148,7 +148,7 @@ WITH order_staging AS (
         ,   NULL AS rate
         ,   type_3_overage_fee AS overage_fee
     
-    FROM sheets_order_form
+    FROM sheets_order_forms
 
     UNION ALL
 
@@ -164,7 +164,7 @@ WITH order_staging AS (
         ,   type_4_rate AS rate
         ,   NULL AS overage_fee
     
-    FROM sheets_order_form
+    FROM sheets_order_forms
 
     UNION ALL
 
@@ -180,7 +180,7 @@ WITH order_staging AS (
         ,   NULL AS rate
         ,   NULL AS overage_fee
     
-    FROM sheets_order_form
+    FROM sheets_order_forms
 )
 
 ,   numbers AS (
@@ -196,10 +196,9 @@ WITH order_staging AS (
 
 ,   orders_monthly AS (
 
+    -- Unnesting the lookup_months column to get month granularity
     SELECT
             s.account_id
-        ,   s.start_date
-        ,   s.end_date
         ,   DATE_TRUNC(
                     'month'
                 ,   '1899-12-30'::DATE + 
@@ -212,11 +211,11 @@ WITH order_staging AS (
                 ELSE REGEXP_COUNT(TRIM(BOTH ',' FROM s.lookup_months), ',') + 1
             END AS month_count
         ,   s.order_type
-
-        -- Using hours_usage assign hours to months accordingly
+        ,   s.hours_usage
+        -- Using hours_usage assign hours to months accordingly, assuming uniform work for Per Term usage
         ,   CASE
                 WHEN s.hours_usage = 'Monthly' THEN s.hours_included
-                WHEN s.hours_usage = 'Per term' THEN ROUND(s.hours_included / month_count)::DECIMAL(10,2)
+                WHEN s.hours_usage = 'Per term' THEN ROUND(s.hours_included / month_count, 2)::DECIMAL(10,2)
             END AS hours_included_monthly
         ,   s.rate
         ,   s.overage_fee
@@ -228,3 +227,73 @@ WITH order_staging AS (
       AND TRIM(SPLIT_PART(s.lookup_months, ',', (n.n + 1)::INTEGER)) <> ''
 
 )
+
+,   delivered_work_monthly AS (
+
+    -- Staging delivered_work so it matches the orders data grain
+    SELECT
+            account_id
+        ,   DATE_TRUNC('month', approved_at) AS delivered_month -- Using approved at as the main date
+        ,   task_type_category
+        ,   COUNT(DISTINCT task_id) AS tasks_delivered
+        ,   SUM(hours) AS delivered_hours
+
+    FROM delivered_work
+
+    -- For simplicity, assuming only approved, billable and done hours are considered in the reporting
+    WHERE approved_at IS NOT NULL
+        AND is_billable = 1
+        AND is_done = 1
+
+    GROUP BY 1, 2, 3    
+
+)
+
+,   ordered_and_delivered AS (
+    -- Merging data
+    SELECT
+        
+        -- Dimensions
+            COALESCE(o.account_id, d.account_id) AS account_id
+        ,   COALESCE(o.order_month, d.delivered_month) AS month
+        ,   COALESCE(o.order_type, d.task_type_category) AS task_type
+        ,   COALESCE(o.hours_usage,'') AS hours_usage
+        -- Ordered metrics
+        ,   COALESCE(o.hours_included_monthly, 0) AS hours_included_monthly
+        ,   COALESCE(o.rate, 0) AS rate
+        ,   COALESCE(o.overage_fee, 0) AS overage_fee
+        -- Delivered metrics
+        ,   COALESCE(d.hours_delivered, 0) AS hours_delivered
+        ,   COALESCE(d.tasks_delivered, 0) AS tasks_delivered
+
+    FROM orders_monthly o
+    FULL OUTER JOIN delivered_monthly d
+        ON  d.account_id = o.account_id
+            AND d.work_month = o.order_month
+            AND d.order_type = o.order_type
+
+)
+
+SELECT
+        account_id
+    ,   month
+    ,   task_type
+    ,   hours_included_monthly
+    ,   rate
+    ,   overage_fee
+    ,   hours_delivered
+    ,   tasks_delivered
+    -- Derived metrics
+    ,   LEAST(hours_delivered, hours_included_monthly) AS included_hours_billed
+    ,   GREATEST(hours_delivered - hours_included_monthly, 0) AS overage_hours_billed
+    ,   included_hours_billed * rate AS included_revenue
+    ,   CASE
+            WHEN
+                hours_usage = 'Monthly' -- Assuming overage is just billable when monthly
+                AND overage_fee IS NOT NULL
+                AND overage_hours_billed > 0
+                THEN overage_hours_billed * overage_fee
+            ELSE 0
+        END AS overage_revenue
+
+FROM ordered_and_delivered;
