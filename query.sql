@@ -270,7 +270,7 @@ WITH order_staging AS (
     FULL OUTER JOIN delivered_monthly d
         ON  d.account_id = o.account_id
             AND d.work_month = o.order_month
-            AND d.order_type = o.order_type
+            AND LOWER(d.order_type) = LOWER(o.order_type)
 
 )
 
